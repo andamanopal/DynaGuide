@@ -134,8 +134,8 @@ For your convenience, the scripts used to run the paper experiments are included
 
 ## Calvin DynaGuide: Immediate Example
 
-1. Download the DynaGuide model from this [link](https://drive.google.com/file/d/1lcI_PBgFIYDsoK4T4qO7SGJJgI2lw0Kd/view?usp=drive_link)
-1. Download the Base policy from this [link](https://drive.google.com/file/d/1DeOnoDacXjBHgy1DGoRJpYIR8SyDy5fJ/view?usp=drive_link)
+1. Download the DynaGuide model from this [link](https://drive.google.com/file/d/1DeOnoDacXjBHgy1DGoRJpYIR8SyDy5fJ/view?usp=drive_link)
+1. Download the Base policy from this [link](https://drive.google.com/file/d/1lcI_PBgFIYDsoK4T4qO7SGJJgI2lw0Kd/view?usp=drive_link)
 1. Download the Guidance conditions for SWITCH_ON from this [link](https://drive.google.com/file/d/1wtEGnG87Y-imqD2MygcqbJwp_RGi7YNB/view?usp=drive_link)
 1. Modify the `calvin_exp_configs_examples/switch_on.json` by changing the `pos_examples` file path to the downloaded guidance condition 
 1. Make a folder called `results` in this directory 
