@@ -267,6 +267,11 @@ Add this after the `noise_pred` is updated by the network and *before* the noise
 # Code References 
 We are grateful for the Calvin [benchmark codebase](https://github.com/mees/calvin) duplicated here in this repository with minor modifications. The diffusion policy is adapted from the [Robomimic codebase](https://robomimic.github.io/) also duplicated here with modifications. The dynamics model was inspired by the [Dino-WM implementation](https://dino-wm.github.io/) and leverages visuals representations from [Dino-V2](https://dinov2.metademolab.com/). 
 
+# Acknowledgements
+Maximilian Du is supported by the Knight-Hennessy Fellowship and the NSF Graduate Research Fellowships Program (GRFP).  This work was supported in part by the NSF Award #2143601, #2037101, and #2132519, Samsung's LEAP-U program, and Toyota Research Institute. 
+We would like to thank ARX for the robot hardware and Yihuai Gao for assisting with the policy deployment on the ARX arm. 
+We appreciate Zhanyi Sun for discussions on classifier guidance and all members of the REAL lab at Stanford for their detailed feedback on paper drafts and experiment directions. 
+The views and conclusions contained herein are those of the authors and should not be interpreted as necessarily representing the official policies, either expressed or implied, of the sponsors. 
 # Feedback
 Are you trying to get DynaGuide working and something's wrong? The numbers don't look right? Send me an email at `maxjdu@stanford.edu` !
 
