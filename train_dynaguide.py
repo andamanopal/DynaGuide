@@ -18,10 +18,27 @@ import time
 from core.dynamics_models import FinalStatePredictionDino, FinalStatePredictionDinoCLS
 from core.embedder_datasets import MultiviewDataset
 
-import torchvision 
-import shutil 
-import json 
-import random 
+import torchvision
+import shutil
+import json
+import random
+import datetime
+
+
+def format_time(seconds):
+    if seconds < 60:
+        return f"{seconds:.0f}s"
+    if seconds < 3600:
+        return f"{seconds/60:.1f}m"
+    return f"{seconds/3600:.1f}h"
+
+
+def gpu_mem_usage():
+    if torch.cuda.is_available():
+        allocated = torch.cuda.memory_allocated() / 1024**3
+        reserved = torch.cuda.memory_reserved() / 1024**3
+        return f"GPU mem: {allocated:.1f}GB alloc / {reserved:.1f}GB reserved"
+    return ""
 
 
 def make_filmstrip(current_state, reco_states, true_states, save_dir):
@@ -113,13 +130,21 @@ def prepare(data, device = "cuda"):
         return {k : v.to(device).to(torch.float32) for k, v in data.items()}
     return data.to(device).to(torch.float32)
 
+def seed_everything(seed):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+
 def main(args):
-    # ACTION_DIM = 7
-    # CAMERA = "third_person"
-    # cameras = [CAMERA] # you can potentially use multiple cameras although we only use one 
-    # cameras = args.cameras 
-    main_camera = args.cameras[0] # arbitrarily use the first camera for visualization 
-    padding = True 
+    if args.seed is not None:
+        seed_everything(args.seed)
+        print(f"Seeded everything with seed={args.seed}")
+
+    main_camera = args.cameras[0] # arbitrarily use the first camera for visualization
+    padding = True
     pad_mode = "zeros" #"zeros"  # use "repeat" for absolute control, "zeros" for delta control to make it proper 
 
     # proprio_dim = 15 # enter the dimension of the proprioception you want to include 
@@ -171,50 +196,62 @@ def main(args):
     writer = SummaryWriter(args.exp_dir) #you can specify logging directory
 
     mse_loss = torch.nn.MSELoss()
-    resizer = None 
+    resizer = None
 
+    # Training progress tracking
+    training_start = time.time()
+    epoch_times = []
+    seed_label = f"[seed={args.seed}] " if args.seed is not None else ""
+
+    print(f"\n{'='*70}")
+    print(f"{seed_label}Starting training: {args.num_epochs} epochs x 100 steps = {args.num_epochs * 100} total steps")
+    print(f"{seed_label}Batch size: {args.batch_size} | Action dim: {args.action_dim} | Noised: {args.noised}")
+    print(f"{seed_label}Output: {args.exp_dir}")
+    if torch.cuda.is_available():
+        print(f"{seed_label}GPU: {torch.cuda.get_device_name(0)} | {gpu_mem_usage()}")
+    print(f"{'='*70}\n")
 
     for i in range(args.num_epochs):
-        info = {"overall" : 0, "mse_loss" : 0, "reco_loss" : 0} #this was misplaced 
+        epoch_start = time.time()
+        info = {"overall" : 0, "mse_loss" : 0, "reco_loss" : 0}
         loss_count = 0
-        print(f"----------------Training Step {i}------------------")
-        for j in tqdm.tqdm(range(100)):
+
+        for j in tqdm.tqdm(range(100), desc=f"{seed_label}Epoch {i}/{args.num_epochs}", leave=False):
             try:
                 sample = next(sample_generator)
             except StopIteration:
                 sample_generator = iter(sampler)
                 sample = next(sample_generator)
-            
 
             state, action, last_state = prepare(sample[0]), prepare(sample[1]), prepare(sample[2])
 
             if args.noised:
-                # this logic will add noise to the actions to simulate the noised action inputs during inference time 
-                m = torch.distributions.geometric.Geometric(0.05 * torch.ones(action.shape[0])) 
-                timesteps = torch.clip(m.sample(), 0, 99).long() # this samples from a geometric distribtuion of expected value 20 
+                # this logic will add noise to the actions to simulate the noised action inputs during inference time
+                m = torch.distributions.geometric.Geometric(0.05 * torch.ones(action.shape[0]))
+                timesteps = torch.clip(m.sample(), 0, 99).long() # this samples from a geometric distribtuion of expected value 20
                 noise = torch.randn(action.shape, device=action.device)
                 noised_action = noise_scheduler.add_noise(action, noise, timesteps)
 
-                chance_of_mask = min(0.5, i / args.num_epochs) # this ensures a ramping effect of the noise operation 
-                mask = torch.rand(action.shape[0]) < chance_of_mask 
-                action[mask] = noised_action[mask] 
-            
-            # the actual dynamics model call 
+                chance_of_mask = min(0.5, i / args.num_epochs) # this ensures a ramping effect of the noise operation
+                mask = torch.rand(action.shape[0]) < chance_of_mask
+                action[mask] = noised_action[mask]
+
+            # the actual dynamics model call
             z_hat_last, reco_last = model(state, action)
-            if resizer is None: # resizing the reconstruction so they can be compared 
+            if resizer is None: # resizing the reconstruction so they can be compared
                 resizer = torchvision.transforms.Resize((last_state[main_camera].shape[-1], last_state[main_camera].shape[-1]))
-           
-            # computing model loss 
+
+            # computing model loss
             reco_loss = mse_loss(resizer(reco_last), last_state[main_camera] / 255)
             info["reco_loss"] += reco_loss.item()
 
             z_last = model.state_embedding(last_state)
             mse_loss_value = mse_loss(z_last, z_hat_last)
-            info["mse_loss"] += mse_loss_value.item() 
+            info["mse_loss"] += mse_loss_value.item()
 
-            loss =  mse_loss_value + reco_loss # recall that these two losses are not connected through gradient 
+            loss =  mse_loss_value + reco_loss # recall that these two losses are not connected through gradient
 
-            info["overall"] += loss.item() 
+            info["overall"] += loss.item()
 
             optimizer.zero_grad() #gradients add up, so you must reset
             loss.backward() #backpropagation. Put a vector into the backward() to compute the jacobian product
@@ -222,12 +259,28 @@ def main(args):
 
             loss_count += 1
 
+        # Epoch timing
+        epoch_elapsed = time.time() - epoch_start
+        epoch_times.append(epoch_elapsed)
+        total_elapsed = time.time() - training_start
+        avg_epoch_time = sum(epoch_times[-20:]) / len(epoch_times[-20:])  # rolling avg of last 20
+        remaining_epochs = args.num_epochs - (i + 1)
+        eta_seconds = avg_epoch_time * remaining_epochs
+        eta_str = format_time(eta_seconds)
+        pct = (i + 1) / args.num_epochs * 100
+
         info = {k : v / loss_count for k, v in info.items()}
         save_scalar_stats(writer, info, i, "train")
 
-        print("Average training losses: ", info)  
-        if i % 5 == 0:  # so we don't have to spend that much time evaluating something 
-            print("--------------Evaluating-----------------")
+        # Compact one-line epoch summary
+        print(
+            f"{seed_label}Epoch {i+1}/{args.num_epochs} ({pct:.1f}%) | "
+            f"loss: {info['overall']:.4f} (mse: {info['mse_loss']:.4f}, reco: {info['reco_loss']:.4f}) | "
+            f"epoch: {epoch_elapsed:.1f}s | elapsed: {format_time(total_elapsed)} | ETA: {eta_str}"
+        )
+
+        if i % 5 == 0:  # so we don't have to spend that much time evaluating something
+            print(f"{seed_label}  Validating...")
             model.eval()
             stats, embeddings_std, (mean, logvar), valid_generator = get_valid_stats(model, valid_sampler, valid_generator, args.exp_dir, step = i,camera = main_camera)
             model.train()
@@ -235,8 +288,25 @@ def main(args):
             writer.add_histogram("valid/embeddings_std", embeddings_std, i)
             writer.add_histogram("valid/mean", mean, i)
             writer.add_histogram("valid/logvar", logvar, i)
+            print(
+                f"{seed_label}  val_loss: {stats['overall']:.4f} (mse: {stats['mse_loss']:.4f}, reco: {stats['reco_loss']:.4f}) | "
+                f"{gpu_mem_usage()}"
+            )
+
         if i % 100 == 0:
-            torch.save(model.state_dict(), args.exp_dir + str(i) + ".pth") #saves everything from the state dictionary
+            ckpt_path = args.exp_dir + str(i) + ".pth"
+            torch.save(model.state_dict(), ckpt_path)
+            print(f"{seed_label}  Saved checkpoint: {ckpt_path}")
+
+    # Final checkpoint + summary
+    final_ckpt = args.exp_dir + str(args.num_epochs) + ".pth"
+    torch.save(model.state_dict(), final_ckpt)
+    total_time = time.time() - training_start
+    print(f"\n{'='*70}")
+    print(f"{seed_label}Training complete!")
+    print(f"{seed_label}Total time: {format_time(total_time)} | Final loss: {info['overall']:.4f}")
+    print(f"{seed_label}Final checkpoint: {final_ckpt}")
+    print(f"{'='*70}\n")
 
         
 if __name__ == "__main__":
@@ -314,6 +384,12 @@ if __name__ == "__main__":
         type=int,
         default=16,
         help="",
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help="Random seed for reproducibility. Use different seeds for ensemble training.",
     )
     args = parser.parse_args()
 
