@@ -64,8 +64,11 @@ def load_models(checkpoint_paths, action_dim, action_chunk_length, cameras, prop
 
 def prepare(data, device="cuda"):
     if isinstance(data, dict):
-        return {k: v.to(device).to(torch.float32) for k, v in data.items()}
-    return torch.tensor(data).to(device).to(torch.float32) if not isinstance(data, torch.Tensor) else data.to(device).to(torch.float32)
+        return {k: (torch.tensor(np.array(v)) if not isinstance(v, torch.Tensor) else v).to(device).to(torch.float32)
+                for k, v in data.items()}
+    if not isinstance(data, torch.Tensor):
+        data = torch.tensor(np.array(data))
+    return data.to(device).to(torch.float32)
 
 
 def categorize_behavior(label):
@@ -85,28 +88,45 @@ def analyze(models, dataset, device, max_samples=2000):
 
     idx = 0
     sample_count = 0
+    action_chunk_len = dataset.action_chunk_length
 
     for demo_idx, length in enumerate(tqdm.tqdm(dataset.lengths_list, desc="Processing demos")):
-        # Use the last timestep of each demo (where behavior outcome is most visible)
-        last_idx = idx + length - 1
+        demo_start = idx
         idx += length
 
-        if last_idx >= len(dataset):
+        # Skip demos too short to have a meaningful action chunk
+        if length < action_chunk_len + 1:
             continue
 
-        sample = dataset.get_labeled_item(last_idx)
-        state_raw, action_raw, label = sample[0], sample[1], sample[2]
+        # Use a mid-demo timestep where the action chunk covers actual behavior
+        # One action chunk before the end gives us meaningful actions AND a known future
+        mid_idx = demo_start + max(0, length - action_chunk_len - 1)
+        last_idx = demo_start + length - 1
+
+        if mid_idx >= len(dataset) or last_idx >= len(dataset):
+            continue
+
+        # Get state + action at mid-demo point (where actions are meaningful)
+        mid_sample = dataset.get_labeled_item(mid_idx)
+        state_raw, action_raw, label = mid_sample[0], mid_sample[1], mid_sample[2]
+
+        # Get the actual end state (ground truth for what the dynamics model should predict)
+        last_sample = dataset.get_labeled_item(last_idx)
+        last_state_raw = last_sample[0]
 
         state = prepare(state_raw, device)
         action = prepare(action_raw, device)
+        last_state = prepare(last_state_raw, device)
         state = {k: torch.unsqueeze(v, dim=0) for k, v in state.items()}
+        last_state = {k: torch.unsqueeze(v, dim=0) for k, v in last_state.items()}
         action = torch.unsqueeze(action, dim=0)
 
         with torch.no_grad():
-            # Ground truth embedding of actual end state
-            gt_embedding = models[0].state_embedding(state, normalize=False).flatten(start_dim=1)
+            # Ground truth: embedding of the actual end state of this demo
+            gt_embedding = models[0].state_embedding(last_state, normalize=False).flatten(start_dim=1)
+            embed_dim = gt_embedding.shape[-1]
 
-            # Predicted embeddings from each model
+            # Predicted future embeddings from each ensemble member
             pred_embeddings = []
             for model in models:
                 z_hat = model.state_action_embedding(state, action, normalize=False).flatten(start_dim=1)
@@ -121,8 +141,8 @@ def analyze(models, dataset, device, max_samples=2000):
             pred_std = pred_stack.std(dim=0)  # (1, D)
             disagreement = pred_std.mean().item()
 
-            # Prediction error: L2 distance from mean prediction to ground truth
-            error = torch.norm(pred_mean - gt_embedding, p=2).item()
+            # Prediction error: normalized MSE (mean squared error per dimension)
+            error = torch.mean((pred_mean - gt_embedding) ** 2).item()
 
         disagreements.append(disagreement)
         prediction_errors.append(error)

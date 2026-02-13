@@ -103,7 +103,7 @@ def get_valid_stats(model, sampler, generator, exp_dir, step, camera = "robot0_e
         
         if loss_count % 50 == 0 and step % 40 == 0:
             print("Making filmstrip!")
-            make_filmstrip(state[camera] / 255, reco_last, last_state[camera] / 255, exp_dir + f"/rc_{step}_{loss_count}.png")
+            make_filmstrip(state[camera] / 255, reco_last, last_state[camera] / 255, os.path.join(exp_dir, f"rc_{step}_{loss_count}.png"))
  
         loss_count += 1
 
@@ -135,8 +135,6 @@ def seed_everything(seed):
     np.random.seed(seed)
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
-    torch.backends.cudnn.deterministic = True
-    torch.backends.cudnn.benchmark = False
 
 def main(args):
     if args.seed is not None:
@@ -151,10 +149,10 @@ def main(args):
 
     # proprio = "proprio" # the state key to use as the lowdim proprioception. Set to None if you want to exclude propriorception 
 
-    if args.exp_dir is not None and not os.path.isdir(args.exp_dir):
-        os.mkdir(args.exp_dir)
-    with open(args.exp_dir + "/args.json", "w") as f: # saving the training parameters 
-        json.dump(vars(args), f)
+    if args.exp_dir is not None:
+        os.makedirs(args.exp_dir, exist_ok=True)
+        with open(os.path.join(args.exp_dir, "args.json"), "w") as f:
+            json.dump(vars(args), f)
 
     model = FinalStatePredictionDino(args.action_dim, args.action_chunk_length, cameras=args.cameras, reconstruction = True, proprio = args.proprio_key, proprio_dim = args.proprio_dim)
     # model = FinalStatePredictionDinoCLS(ACTION_DIM, args.action_chunk_length, cameras=cameras, reconstruction = True, proprio = proprio, proprio_dim = proprio_dim) # alternative model 
@@ -192,7 +190,7 @@ def main(args):
                 set_alpha_to_one=True
         )
 
-    optimizer = torch.optim.Adam(model.parameters(), lr=1e-4)
+    optimizer = torch.optim.Adam(filter(lambda p: p.requires_grad, model.parameters()), lr=1e-4)
     writer = SummaryWriter(args.exp_dir) #you can specify logging directory
 
     mse_loss = torch.nn.MSELoss()
@@ -233,8 +231,8 @@ def main(args):
                 noised_action = noise_scheduler.add_noise(action, noise, timesteps)
 
                 chance_of_mask = min(0.5, i / args.num_epochs) # this ensures a ramping effect of the noise operation
-                mask = torch.rand(action.shape[0]) < chance_of_mask
-                action[mask] = noised_action[mask]
+                mask = (torch.rand(action.shape[0], device=action.device) < chance_of_mask).unsqueeze(-1).unsqueeze(-1)
+                action = torch.where(mask, noised_action, action)
 
             # the actual dynamics model call
             z_hat_last, reco_last = model(state, action)
@@ -245,7 +243,8 @@ def main(args):
             reco_loss = mse_loss(resizer(reco_last), last_state[main_camera] / 255)
             info["reco_loss"] += reco_loss.item()
 
-            z_last = model.state_embedding(last_state)
+            with torch.no_grad():
+                z_last = model.state_embedding(last_state)
             mse_loss_value = mse_loss(z_last, z_hat_last)
             info["mse_loss"] += mse_loss_value.item()
 
@@ -286,20 +285,18 @@ def main(args):
             model.train()
             save_scalar_stats(writer, stats, i, "valid")
             writer.add_histogram("valid/embeddings_std", embeddings_std, i)
-            writer.add_histogram("valid/mean", mean, i)
-            writer.add_histogram("valid/logvar", logvar, i)
             print(
                 f"{seed_label}  val_loss: {stats['overall']:.4f} (mse: {stats['mse_loss']:.4f}, reco: {stats['reco_loss']:.4f}) | "
                 f"{gpu_mem_usage()}"
             )
 
         if i % 100 == 0:
-            ckpt_path = args.exp_dir + str(i) + ".pth"
+            ckpt_path = os.path.join(args.exp_dir, f"{i}.pth")
             torch.save(model.state_dict(), ckpt_path)
             print(f"{seed_label}  Saved checkpoint: {ckpt_path}")
 
     # Final checkpoint + summary
-    final_ckpt = args.exp_dir + str(args.num_epochs) + ".pth"
+    final_ckpt = os.path.join(args.exp_dir, f"{args.num_epochs}.pth")
     torch.save(model.state_dict(), final_ckpt)
     total_time = time.time() - training_start
     print(f"\n{'='*70}")

@@ -46,7 +46,9 @@ ACTION_DIM=7
 PROPRIO_DIM=15
 ACTION_CHUNK=16
 
-NUM_GPUS=$(nvidia-smi -L 2>/dev/null | wc -l || echo 1)
+NUM_GPUS=$(nvidia-smi -L 2>/dev/null | wc -l)
+NUM_GPUS=${NUM_GPUS:-1}
+if [ "$NUM_GPUS" -eq 0 ]; then NUM_GPUS=1; fi
 echo "Detected ${NUM_GPUS} GPU(s)"
 echo "Training ${NUM_MODELS} models with seeds: ${SEEDS[*]}"
 echo "Mode: $(if $PARALLEL; then echo "PARALLEL"; else echo "SEQUENTIAL"; fi)"
@@ -81,8 +83,14 @@ if $PARALLEL; then
         PIDS+=($!)
     done
 
+    TOTAL_VRAM_MB=$(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits | head -1)
+    TOTAL_VRAM_GB=$((TOTAL_VRAM_MB / 1024))
+    ESTIMATED_GB=$((NUM_MODELS * 7))
     echo "All ${NUM_MODELS} training jobs launched. Waiting for completion..."
-    echo "  VRAM usage: ~$((NUM_MODELS * 4))GB / $(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits | head -1)MB"
+    echo "  Estimated VRAM: ~${ESTIMATED_GB}GB needed / ${TOTAL_VRAM_GB}GB available"
+    if [ $ESTIMATED_GB -gt $TOTAL_VRAM_GB ]; then
+        echo "  WARNING: May OOM. Consider fewer --num_models or removing --parallel"
+    fi
 
     for pid in "${PIDS[@]}"; do
         wait "$pid"

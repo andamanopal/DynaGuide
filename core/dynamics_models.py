@@ -134,7 +134,12 @@ class FinalStatePredictionDino(nn.Module):
             # this model is *not* used to train the dynamics model; it is only for visualization. 
             self.reconstruction_model = VQVAE(in_channel = 3, channel = 384, n_res_block = 4, n_res_channel = 128, emb_dim = 128, quantize = False)
 
-    def trainable_parameters(self): # counting the parameters in the network 
+    def train(self, mode=True):
+        super().train(mode)
+        self.state_encoder.eval()  # Always keep frozen DINO in eval mode
+        return self
+
+    def trainable_parameters(self): # counting the parameters in the network
         count = 0 
         for parameter in self.parameters():
             if parameter.requires_grad:

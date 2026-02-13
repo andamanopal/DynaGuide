@@ -73,7 +73,7 @@ def make_dataset(path, num_demos=30):
         for i in range(num_demos):
             length = np.random.randint(20, 40)
             demo = grp.create_group(f'demo_{i}')
-            demo.create_dataset('obs/third_person', data=np.random.randint(0, 255, (length, 3, 200, 200), dtype=np.uint8))
+            demo.create_dataset('obs/third_person', data=np.random.randint(0, 255, (length, 200, 200, 3), dtype=np.uint8))
             demo.create_dataset('obs/proprio', data=np.random.randn(length, 15).astype(np.float32))
             demo.create_dataset('actions', data=np.random.randn(length, 7).astype(np.float32) * 0.1)
             demo.create_dataset('rewards', data=np.zeros(length))
@@ -247,9 +247,7 @@ echo "  - Training logs: ${SMOKE_DIR}/seed_*/train.log"
 echo "  - Plots: ${SMOKE_DIR}/analysis/"
 echo ""
 
-# Ask about cleanup
-read -p "Clean up smoke test artifacts? [y/N] " -n 1 -r
-echo
-if [[ $REPLY =~ ^[Yy]$ ]]; then
+echo "To clean up: rm -rf ${SMOKE_DIR}"
+if [[ "${1:-}" == "--cleanup" ]]; then
     cleanup
 fi
