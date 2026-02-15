@@ -55,6 +55,10 @@ echo "Mode: $(if $PARALLEL; then echo "PARALLEL"; else echo "SEQUENTIAL"; fi)"
 
 mkdir -p "$OUTPUT_ROOT"
 
+# Pre-cache DINOv2 model (avoids race condition in parallel training)
+echo "Pre-caching DINOv2 model..."
+python -c "import torch; torch.hub.load('facebookresearch/dinov2', 'dinov2_vits14')"
+
 if $PARALLEL; then
     # Launch all models in parallel
     # Works on single GPU (CUDA time-slices, ~4GB VRAM each) or multi-GPU (round-robin)

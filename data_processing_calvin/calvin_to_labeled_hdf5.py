@@ -4,31 +4,28 @@ import tqdm
 import json
 import numpy as np
 import imageio
-import robomimic.utils.obs_utils as ObsUtils
-import robomimic.utils.env_utils as EnvUtils
-import robomimic.utils.file_utils as FileUtils
+# import robomimic.utils.obs_utils as ObsUtils  # unused
+# import robomimic.utils.env_utils as EnvUtils  # unused
+# import robomimic.utils.file_utils as FileUtils  # unused
 from pathlib import Path
 import pickle
 import os
-import matplotlib.pyplot as plt 
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
 from scipy.spatial.transform import Rotation as R
-import random 
-"""
+import random
+import argparse
 
-"""
+parser = argparse.ArgumentParser()
+parser.add_argument("--original_dir", type=str, default="/store/real/maxjdu/repos/calvin/dataset/task_ABCD_D/training/",
+                    help="Path to raw CALVIN split (e.g. .../task_debug/training/)")
+parser.add_argument("--task_name", type=str, default="CalvinABCD_betterseg",
+                    help="Output folder name under ../dataset/")
+_args = parser.parse_args()
 
-
-# TASK_NAME = "CalvinDD_door_left_80_percent"
-# TASK_NAME = "CalvinDD_turn_on_green_light"
-# TASK_NAME = "CalvinDD_open_drawer"
-# TASK_NAME = "CalvinDD_door_move_right"
-
-# ORIGINAL_DIR = "/store/real/maxjdu/repos/calvin/dataset/task_D_D/validation/"
-
-# TASK_NAME = "CalvinDD_betterseg"
-TASK_NAME = "CalvinABCD_betterseg"
-# ORIGINAL_DIR = "/store/real/maxjdu/repos/calvin/dataset/task_D_D/training/"
-ORIGINAL_DIR = "/store/real/maxjdu/repos/calvin/dataset/task_ABCD_D/training/"
+TASK_NAME = _args.task_name
+ORIGINAL_DIR = _args.original_dir
 
 SCALING_FACTOR =  {"sliding_door" : 10,
             "drawer" : 10,

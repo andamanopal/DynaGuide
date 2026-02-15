@@ -4,19 +4,21 @@ import tqdm
 import json
 import numpy as np
 import imageio
-import robomimic.utils.obs_utils as ObsUtils
-import robomimic.utils.env_utils as EnvUtils
-import robomimic.utils.file_utils as FileUtils
+# import robomimic.utils.obs_utils as ObsUtils  # unused
+# import robomimic.utils.env_utils as EnvUtils  # unused
+# import robomimic.utils.file_utils as FileUtils  # unused
 from pathlib import Path
 import pickle
 import os
-import matplotlib.pyplot as plt 
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
 from scipy.spatial.transform import Rotation as R
-import random 
-#
+import random
+import argparse
 
 # make a list of different behaviors and sorting 1/2 into these bins, and adding 1/2 into the "test"
-relevant_behaviors = ["button_on", "button_off", "switch_on", "switch_off", "drawer_open", "drawer_close", 
+relevant_behaviors = ["button_on", "button_off", "switch_on", "switch_off", "drawer_open", "drawer_close",
                       "door_left", "door_right", "red_lift", "blue_lift", "pink_lift", "other"]
 
 relevant_behaviors_count = {k : 0 for k in relevant_behaviors}
@@ -60,10 +62,16 @@ datawriter_list = list() # for housekeeping
 # - segmented target behavior (50%)
 
 
-# ORIGINAL_DIR = "/store/real/maxjdu/repos/robotrainer/dataset/CalvinDD_validation_all/data.hdf5"
-ORIGINAL_DIR = "/store/real/maxjdu/repos/robotrainer/dataset/CalvinDD_validation_better_seg_all/data.hdf5" # this is where the segmented dataset lies 
+parser = argparse.ArgumentParser()
+parser.add_argument("--original_dir", type=str,
+                    default="/store/real/maxjdu/repos/robotrainer/dataset/CalvinDD_validation_better_seg_all/data.hdf5",
+                    help="Path to segmented validation HDF5 from calvin_to_labeled_hdf5.py")
+parser.add_argument("--task_name", type=str, default="CalvinDD_validation_by_category_wcubes",
+                    help="Output folder name under ../dataset/")
+_args = parser.parse_args()
 
-TASK_NAME = "CalvinDD_validation_by_category_wcubes"
+ORIGINAL_DIR = _args.original_dir
+TASK_NAME = _args.task_name
 
 for behavior in relevant_behaviors:
     Path(f'../dataset/{TASK_NAME}').mkdir(parents=True, exist_ok=True)

@@ -55,6 +55,11 @@ python -c "import diffusers" || fail "diffusers not installed"
 python -c "from core.dynamics_models import FinalStatePredictionDino; print('  DynaGuide core: OK')" || fail "DynaGuide not installed (run pip install -e .)"
 echo ""
 
+# Step 0.5: Pre-cache DINOv2 model (avoids race condition in parallel training)
+echo "[0.5/6] Pre-caching DINOv2 model..."
+python -c "import torch; torch.hub.load('facebookresearch/dinov2', 'dinov2_vits14'); print('  DINOv2 cached: OK')" || fail "DINOv2 download"
+echo ""
+
 # Step 1: Generate tiny synthetic dataset
 echo "[1/6] Generating synthetic HDF5 dataset..."
 mkdir -p "$SMOKE_DIR"
@@ -182,7 +187,7 @@ for seed in seeds:
     model.eval()
 
     # Extract a sample of weights to compare
-    sample_weight = list(model.parameters())[10].data.flatten()[:100].numpy()
+    sample_weight = [p for p in model.parameters() if p.requires_grad][0].data.flatten()[:100].cpu().numpy()
     outputs.append(sample_weight)
     print(f'  seed={seed}: loaded {ckpt}, weight sample mean={sample_weight.mean():.6f}')
 
