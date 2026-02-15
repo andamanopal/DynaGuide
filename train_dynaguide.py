@@ -9,7 +9,9 @@ import torch.nn as nn
 from torchvision import transforms
 from torch.utils.data import Dataset
 from torch.utils.data import DataLoader
-import matplotlib.pyplot as plt 
+import matplotlib
+matplotlib.use("Agg")  # headless backend — no display needed
+import matplotlib.pyplot as plt
 import argparse 
 import os 
 from torch.utils.tensorboard import SummaryWriter

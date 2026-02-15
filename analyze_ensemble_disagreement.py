@@ -23,6 +23,8 @@ Usage:
 import argparse
 import os
 
+import matplotlib
+matplotlib.use("Agg")  # headless backend — no display needed
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
