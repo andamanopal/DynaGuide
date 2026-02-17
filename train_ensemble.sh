@@ -26,10 +26,14 @@ shift 3
 # Parse optional flags
 PARALLEL=false
 NUM_MODELS=5
+NUM_EPOCHS=6000
+PATIENCE=""
 while [[ $# -gt 0 ]]; do
     case $1 in
         --parallel) PARALLEL=true; shift ;;
         --num_models) NUM_MODELS=$2; shift 2 ;;
+        --num_epochs) NUM_EPOCHS=$2; shift 2 ;;
+        --patience) PATIENCE=$2; shift 2 ;;
         *) echo "Unknown option: $1"; exit 1 ;;
     esac
 done
@@ -40,7 +44,6 @@ for i in $(seq 1 $NUM_MODELS); do
     SEEDS+=($((i * 111)))  # 111, 222, 333, 444, 555, ...
 done
 
-NUM_EPOCHS=6000
 BATCH_SIZE=16
 ACTION_DIM=7
 PROPRIO_DIM=15
@@ -82,7 +85,8 @@ if $PARALLEL; then
             --action_chunk_length $ACTION_CHUNK \
             --batch_size $BATCH_SIZE \
             --seed $seed \
-            --noised &
+            --noised \
+            ${PATIENCE:+--patience $PATIENCE} &
 
         PIDS+=($!)
     done
@@ -119,7 +123,8 @@ else
             --action_chunk_length $ACTION_CHUNK \
             --batch_size $BATCH_SIZE \
             --seed $seed \
-            --noised
+            --noised \
+            ${PATIENCE:+--patience $PATIENCE}
 
         echo "Finished seed=${seed}"
     done

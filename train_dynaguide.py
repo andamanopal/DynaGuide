@@ -13,9 +13,10 @@ import matplotlib
 matplotlib.use("Agg")  # headless backend — no display needed
 import matplotlib.pyplot as plt
 import argparse 
-import os 
+import os
+import glob
 from torch.utils.tensorboard import SummaryWriter
-import time 
+import time
 
 from core.dynamics_models import FinalStatePredictionDino, FinalStatePredictionDinoCLS
 from core.embedder_datasets import MultiviewDataset
@@ -211,6 +212,11 @@ def main(args):
         print(f"{seed_label}GPU: {torch.cuda.get_device_name(0)} | {gpu_mem_usage()}")
     print(f"{'='*70}\n")
 
+    best_val_loss = float("inf")
+    patience_counter = 0
+    best_epoch = 0
+    early_stopped = False
+
     for i in range(args.num_epochs):
         epoch_start = time.time()
         info = {"overall" : 0, "mse_loss" : 0, "reco_loss" : 0}
@@ -292,13 +298,31 @@ def main(args):
                 f"{gpu_mem_usage()}"
             )
 
+            if args.patience is not None:
+                if stats["overall"] < best_val_loss:
+                    best_val_loss = stats["overall"]
+                    patience_counter = 0
+                    best_epoch = i + 1
+                    for old in glob.glob(os.path.join(args.exp_dir, "best_val_epoch-*.pth")):
+                        os.remove(old)
+                    best_ckpt_name = f"best_val_epoch-{best_epoch}.pth"
+                    torch.save(model.state_dict(), os.path.join(args.exp_dir, best_ckpt_name))
+                    print(f"{seed_label}  New best val_loss: {best_val_loss:.4f} (saved {best_ckpt_name})")
+                else:
+                    patience_counter += 1
+                    print(f"{seed_label}  No improvement ({patience_counter}/{args.patience})")
+                    if patience_counter >= args.patience:
+                        print(f"{seed_label}  Early stopping at epoch {i+1} (best was epoch {best_epoch} with val_loss: {best_val_loss:.4f})")
+                        early_stopped = True
+                        break
+
         if i % 100 == 0:
             ckpt_path = os.path.join(args.exp_dir, f"{i}.pth")
             torch.save(model.state_dict(), ckpt_path)
             print(f"{seed_label}  Saved checkpoint: {ckpt_path}")
 
-    # Final checkpoint + summary
-    final_ckpt = os.path.join(args.exp_dir, f"{args.num_epochs}.pth")
+    final_epoch = i + 1 if early_stopped else args.num_epochs
+    final_ckpt = os.path.join(args.exp_dir, f"{final_epoch}.pth")
     torch.save(model.state_dict(), final_ckpt)
     total_time = time.time() - training_start
     print(f"\n{'='*70}")
@@ -389,6 +413,12 @@ if __name__ == "__main__":
         type=int,
         default=None,
         help="Random seed for reproducibility. Use different seeds for ensemble training.",
+    )
+    parser.add_argument(
+        "--patience",
+        type=int,
+        default=None,
+        help="Early stopping: stop if val loss doesn't improve for this many validation checks. Disabled if not set.",
     )
     args = parser.parse_args()
 
