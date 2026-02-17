@@ -37,7 +37,7 @@ import matplotlib.pyplot as plt
 from core.dynamics_models import FinalStatePredictionDino
 from core.embedder_datasets import MultiviewDataset
 from core.calvin_utils import generate_reset_state, check_state_difference
-from core.dynaguide import calculate_classifier_guidance, calculate_position_guidance
+from core.dynaguide import calculate_classifier_guidance, calculate_position_guidance, calculate_adaptive_classifier_guidance
 
 """
 THIS CODE ADAPTED FROM ROBOMIMIC POLICY ROLLOUT CODE
@@ -333,11 +333,33 @@ def run_trained_agent(args):
         bad_dataset = MultiviewDataset(bad_dataset_path, action_chunk_length = ACTION_CHUNK_LENGTH, cameras = cameras, \
                                         padding = padding, pad_mode = pad_mode, proprio = proprio)
     
+    # Load ensemble models for adaptive guidance (if provided)
+    ensemble_models = None
+    disagreement_history = None
+    if args.ensemble_paths is not None:
+        ensemble_models = []
+        for epath in args.ensemble_paths:
+            emodel = FinalStatePredictionDino(
+                ACTION_DIM, ACTION_CHUNK_LENGTH, cameras=cameras,
+                reconstruction=True, proprio=proprio, proprio_dim=proprio_dim,
+            )
+            emodel.load_state_dict(torch.load(epath, map_location="cuda"))
+            emodel.to("cuda")
+            emodel.eval()
+            ensemble_models.append(emodel)
+        print(f"Loaded {len(ensemble_models)} ensemble models for adaptive guidance")
+
     if args.direct_position_guidance:
         classifier_grad, good_embeddings, bad_embeddings = calculate_position_guidance(exp_setup_config["loc_target"], args.scale)
-    
+
+    elif ensemble_models is not None:
+        classifier_grad, good_embeddings, bad_embeddings, disagreement_history = calculate_adaptive_classifier_guidance(
+            ensemble_models, good_dataset=good_dataset, main_camera=MAIN_CAMERA,
+            scale=args.scale, bad_dataset=bad_dataset, alpha=args.alpha,
+            max_examples=args.max_examples, beta=args.adaptive_beta,
+        )
     else:
-        classifier_grad, good_embeddings, bad_embeddings = calculate_classifier_guidance(model, good_dataset = good_dataset, main_camera = MAIN_CAMERA, 
+        classifier_grad, good_embeddings, bad_embeddings = calculate_classifier_guidance(model, good_dataset = good_dataset, main_camera = MAIN_CAMERA,
                                                         scale = args.scale, bad_dataset = bad_dataset, alpha = args.alpha, max_examples = args.max_examples)
     
     robot_initial_positions = None  
@@ -454,6 +476,18 @@ def run_trained_agent(args):
         json_f = open(args.json_path, "w")
         json_f.write(stats_json)
         json_f.close()
+
+    # Log adaptive guidance statistics
+    if disagreement_history is not None and len(disagreement_history) > 0:
+        d_arr = np.array(disagreement_history)
+        print(f"\nAdaptive Guidance Statistics:")
+        print(f"  Disagreement: mean={d_arr.mean():.4f}, std={d_arr.std():.4f}, "
+              f"min={d_arr.min():.4f}, max={d_arr.max():.4f}")
+        effective_scales = args.scale / (1.0 + args.adaptive_beta * d_arr)
+        print(f"  Effective scale: mean={effective_scales.mean():.4f}, "
+              f"min={effective_scales.min():.4f}, max={effective_scales.max():.4f}")
+        # Save disagreement trace
+        np.save(os.path.join(args.output_folder, "disagreement_trace.npy"), d_arr)
 
     if write_video:
         video_writer.close()
@@ -672,6 +706,26 @@ if __name__ == "__main__":
         type=int,
         default=4,
         help="If provided, do not run actions in env, and instead just measure the rate of action computation and raise warnings if it dips below this threshold",
+    )
+
+    # Adaptive guidance via ensemble disagreement
+    parser.add_argument(
+        "--ensemble_paths",
+        type=str,
+        nargs="+",
+        default=None,
+        help="Paths to ensemble dynamics model checkpoints. When provided, "
+             "enables adaptive guidance that modulates scale based on "
+             "ensemble disagreement.",
+    )
+
+    parser.add_argument(
+        "--adaptive_beta",
+        type=float,
+        default=1.0,
+        help="Controls sensitivity of adaptive guidance to disagreement. "
+             "Higher beta = more conservative (reduces guidance more). "
+             "Effective scale = base_scale / (1 + beta * disagreement).",
     )
 
     # # If provided, set num_inference_timesteps explicitly for diffusion policy evaluation

@@ -105,3 +105,107 @@ def calculate_classifier_guidance(model, good_dataset, scale, main_camera, bad_d
     
     assert good_embeddings is not None or bad_embeddings is not None, "You provided no good or bad embeddings"
     return guidance, good_embeddings, bad_embeddings
+
+
+def calculate_adaptive_classifier_guidance(
+    ensemble_models, good_dataset, scale, main_camera,
+    bad_dataset=None, alpha=20, max_examples=None, beta=1.0,
+):
+    """
+    Adaptive guidance using ensemble disagreement to modulate scale.
+
+    Same as calculate_classifier_guidance, but uses K dynamics models to
+    estimate prediction uncertainty. When ensemble disagreement is high,
+    the guidance scale is reduced (the model is uncertain about its
+    dynamics prediction, so guidance may be unreliable).
+
+    Adaptive scale: lambda_t = base_scale / (1 + beta * disagreement)
+
+    Args:
+        ensemble_models: list of K FinalStatePredictionDino models
+        beta: controls sensitivity to disagreement (higher = more conservative)
+    """
+    primary_model = ensemble_models[0]
+
+    # Precompute good/bad embeddings using primary model (same as original)
+    good_embeddings_list = list()
+    bad_embeddings_list = list()
+    bad_embeddings = None
+    good_embeddings = None
+    print(f"Precomputing embeddings (ensemble of {len(ensemble_models)} models)")
+    idx = 0
+    if good_dataset is not None:
+        for length in tqdm(good_dataset.lengths_list):
+            idx += length
+            sample = good_dataset.get_labeled_item(idx - 1)
+            state, action, label = prepare_np(sample[0]), prepare_np(sample[1]), sample[2]
+            state = {k: torch.unsqueeze(v, dim=0) for k, v in state.items()}
+            action = torch.unsqueeze(action, dim=0)
+            with torch.no_grad():
+                good_embedding = primary_model.state_action_embedding(state, action).flatten(start_dim=1)
+            good_embeddings_list.append(good_embedding.clone())
+        good_embeddings = torch.concatenate(good_embeddings_list, dim=0)
+        if max_examples is not None:
+            print("LIMITING GOOD EMBEDDINGS TO", max_examples)
+            good_embeddings = good_embeddings[:max_examples]
+
+    idx = 0
+    if bad_dataset is not None:
+        for length in tqdm(bad_dataset.lengths_list):
+            idx += length
+            sample = bad_dataset.get_labeled_item(idx - 1)
+            state, action, label = prepare_np(sample[0]), prepare_np(sample[1]), sample[2]
+            state = {k: torch.unsqueeze(v, dim=0) for k, v in state.items()}
+            action = torch.unsqueeze(action, dim=0)
+            with torch.no_grad():
+                bad_embedding = primary_model.state_action_embedding(state, action).flatten(start_dim=1)
+            bad_embeddings_list.append(bad_embedding.clone())
+        bad_embeddings = torch.concatenate(bad_embeddings_list, dim=0)
+
+    print("ADAPTIVE GUIDANCE | base scale:", scale, "| beta:", beta, "| alpha:", alpha)
+
+    # Track disagreement values for logging
+    disagreement_history = []
+
+    def guidance(states, actions):
+        relevant_state = {main_camera: states[main_camera][:, -1] * 255}
+        relevant_state["proprio"] = states["proprio"][:, -1]
+
+        # Primary model prediction (used for gradient direction)
+        predicted_end = primary_model.state_action_embedding(relevant_state, actions).flatten(start_dim=1)
+
+        # Ensemble disagreement (used for scale modulation)
+        with torch.no_grad():
+            ensemble_preds = []
+            for m in ensemble_models:
+                pred = m.state_action_embedding(relevant_state, actions).flatten(start_dim=1)
+                ensemble_preds.append(pred)
+            pred_stack = torch.stack(ensemble_preds, dim=0)  # (K, B, D)
+            disagreement = pred_stack.std(dim=0).mean().item()
+            disagreement_history.append(disagreement)
+
+        # Adaptive scale: reduce guidance when models disagree
+        adaptive_scale = scale / (1.0 + beta * disagreement)
+
+        # Compute guidance gradient (same as original)
+        annealing_factor = 1
+        latent_prob_distance = 0
+
+        if good_embeddings is not None:
+            norm_pairwise_dist = torch.cdist(good_embeddings, predicted_end, p=2.0)
+            latent_prob_distance = torch.logsumexp(-norm_pairwise_dist / alpha, dim=0)
+
+        if bad_embeddings is not None:
+            norm_pairwise_dist = torch.cdist(bad_embeddings, predicted_end, p=2.0)
+            bad_dists = torch.logsumexp(-norm_pairwise_dist / alpha, dim=0)
+            latent_prob_distance = latent_prob_distance - bad_dists
+
+        with torch.no_grad():
+            gradient = torch.autograd.grad(latent_prob_distance, actions)[0]
+        gradient = adaptive_scale * gradient
+        gradient = annealing_factor * gradient
+
+        return gradient
+
+    assert good_embeddings is not None or bad_embeddings is not None, "You provided no good or bad embeddings"
+    return guidance, good_embeddings, bad_embeddings, disagreement_history

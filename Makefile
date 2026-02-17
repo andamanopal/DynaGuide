@@ -6,6 +6,9 @@
 #   make convert SPLIT=training TASK=CalvinDD_train CALVIN_DIR=/workspace/calvin/dataset/task_D_D
 #   make train TRAIN_HDF5=dataset/CalvinDD_train/data.hdf5 TEST_HDF5=dataset/CalvinDD_test/labeled_test_set.hdf5
 #   make analyze TEST_HDF5=dataset/CalvinDD_val/data.hdf5
+#   make figures NPZ=results/ensemble/analysis/ensemble_results.npz
+#   make eval-baseline AGENT=<base_policy> GUIDANCE=<dynamics_model> EXP_CONFIG=<config.json>
+#   make eval-adaptive AGENT=<base_policy> GUIDANCE=<dynamics_model> EXP_CONFIG=<config.json>
 #   make tensorboard
 
 # ============================================================
@@ -27,8 +30,25 @@ CHECKPOINT     ?= 200
 TB_PORT        ?= 6006
 LOCAL_DEST     ?= ~/Desktop
 
+# Evaluation / Adaptive Guidance
+AGENT          ?= pretrained/base_policy.pth
+GUIDANCE       ?= pretrained/dynamics_model.pth
+EXP_CONFIG     ?= calvin_exp_configs_examples/switch_on.json
+SCALE          ?= 1.5
+ALPHA          ?= 30
+SS             ?= 4
+N_ROLLOUTS     ?= 50
+HORIZON        ?= 400
+ADAPTIVE_BETA  ?= 1.0
+EVAL_DIR       ?= results/eval
+FIGURES_DIR    ?= $(ANALYSIS_DIR)/figures
+NPZ            ?= $(ANALYSIS_DIR)/ensemble_results.npz
+PRETRAINED_DIR ?= pretrained
+
 .PHONY: help install smoke-test convert split-val verify-labels train \
-        analyze download-plot tensorboard status kill clean clean-checkpoints
+        analyze figures eval-baseline eval-adaptive eval-compare \
+        download-plot download-pretrained tensorboard status kill \
+        clean clean-checkpoints
 
 # ============================================================
 # Help
@@ -67,7 +87,21 @@ help:
 	@echo "  make analyze           Run ensemble disagreement analysis"
 	@echo "    ANALYSIS_HDF5=...     HDF5 to analyze against"
 	@echo "    CHECKPOINT=best       Which checkpoint: best, latest, or epoch number"
+	@echo "  make figures           Generate uncertainty calibration plots from .npz"
+	@echo "    NPZ=...               Path to ensemble_results.npz"
 	@echo "  make download-plot     SCP scatter plot to local machine"
+	@echo ""
+	@echo "Evaluation (Full Pipeline):"
+	@echo "  make download-pretrained  Download author's pretrained models"
+	@echo "  make install-calvin       Install CALVIN env + robomimic"
+	@echo "  make eval-baseline     Run DynaGuide with fixed scale (original)"
+	@echo "    AGENT=...             Base policy checkpoint"
+	@echo "    GUIDANCE=...          Dynamics model checkpoint"
+	@echo "    EXP_CONFIG=...        Experiment config JSON"
+	@echo "    SCALE=1.5             Fixed guidance scale"
+	@echo "  make eval-adaptive     Run DynaGuide with adaptive scale (ours)"
+	@echo "    ADAPTIVE_BETA=1.0     Sensitivity to disagreement"
+	@echo "  make eval-compare      Run both baseline and adaptive, print comparison"
 	@echo ""
 	@echo "Cleanup:"
 	@echo "  make clean-checkpoints Remove intermediate checkpoints (keep best + final)"
@@ -78,7 +112,13 @@ help:
 	@echo "  make split-val TASK=CalvinDD_val"
 	@echo "  make verify-labels TEST_HDF5=dataset/CalvinDD_test/labeled_test_set.hdf5"
 	@echo "  make train TRAIN_HDF5=dataset/CalvinDD_train/data.hdf5 TEST_HDF5=dataset/CalvinDD_test/labeled_test_set.hdf5"
-	@echo "  make analyze ANALYSIS_HDF5=dataset/CalvinDD_val/data.hdf5"
+	@echo "  make analyze ANALYSIS_HDF5=dataset/CalvinDD_val/data.hdf5 CHECKPOINT=best"
+	@echo "  make figures"
+	@echo ""
+	@echo "Full Eval Pipeline (copy-paste):"
+	@echo "  make download-pretrained"
+	@echo "  make install-calvin"
+	@echo "  make eval-compare EXP_CONFIG=calvin_exp_configs_examples/switch_on.json"
 
 # ============================================================
 # Setup
@@ -176,11 +216,103 @@ analyze:
 	@echo "Results in $(ANALYSIS_DIR)/"
 	@ls $(ANALYSIS_DIR)/
 
+figures:
+	python plot_uncertainty_figures.py \
+		--npz $(NPZ) \
+		--output_dir $(FIGURES_DIR)
+
 download-plot:
 	@echo "Run this on your LOCAL machine:"
-	@echo "  scp -P 22128 -i ~/.ssh/id_ed25519 \\"
-	@echo "    root@69.30.85.139:$(PWD)/$(ANALYSIS_DIR)/disagreement_vs_error.png \\"
+	@echo "  scp -P <PORT> -i ~/.ssh/id_ed25519 \\"
+	@echo "    root@<POD_IP>:$(PWD)/$(ANALYSIS_DIR)/*.png \\"
 	@echo "    $(LOCAL_DEST)/"
+	@echo ""
+	@echo "  scp -P <PORT> -i ~/.ssh/id_ed25519 \\"
+	@echo "    root@<POD_IP>:$(PWD)/$(FIGURES_DIR)/*.png \\"
+	@echo "    $(LOCAL_DEST)/"
+
+# ============================================================
+# Evaluation: Full Pipeline (Baseline vs Adaptive)
+# ============================================================
+
+# Resolve ensemble checkpoint paths
+ENSEMBLE_CKPTS = $(shell for d in $(OUTPUT_ROOT)/seed_*; do ls $$d/best_val_epoch-*.pth 2>/dev/null | head -1; done)
+
+download-pretrained:
+	@mkdir -p $(PRETRAINED_DIR)
+	@echo "Download these manually from Google Drive (requires browser auth):"
+	@echo "  1. Base policy:          https://drive.google.com/file/d/1lcI_PBgFIYDsoK4T4qO7SGJJgI2lw0Kd"
+	@echo "  2. Dynamics model:       https://drive.google.com/file/d/1DeOnoDacXjBHgy1DGoRJpYIR8SyDy5fJ"
+	@echo "  3. Guidance (switch_on): https://drive.google.com/file/d/1wtEGnG87Y-imqD2MygcqbJwp_RGi7YNB"
+	@echo ""
+	@echo "Place them in $(PRETRAINED_DIR)/"
+	@echo "Then update AGENT and GUIDANCE in your make commands."
+
+install-calvin:
+	cd robomimic && pip install -e .
+	cd calvin && bash install.sh
+	@echo "CALVIN environment and robomimic installed."
+
+eval-baseline:
+	@mkdir -p $(EVAL_DIR)/baseline
+	python run_dynaguide.py \
+		--video_path $(EVAL_DIR)/baseline/rollout.mp4 \
+		--dataset_path $(EVAL_DIR)/baseline/rollout.hdf5 \
+		--dataset_obs \
+		--json_path $(EVAL_DIR)/baseline/results.json \
+		--horizon $(HORIZON) \
+		--n_rollouts $(N_ROLLOUTS) \
+		--agent $(AGENT) \
+		--output_folder $(EVAL_DIR)/baseline \
+		--video_skip 2 \
+		--exp_setup_config $(EXP_CONFIG) \
+		--guidance $(GUIDANCE) \
+		--camera_names third_person \
+		--scale $(SCALE) --ss $(SS) --alpha $(ALPHA) \
+		--save_frames
+	@echo ""
+	@echo "Baseline results:"
+	@cat $(EVAL_DIR)/baseline/results.json
+
+eval-adaptive:
+	@mkdir -p $(EVAL_DIR)/adaptive
+	python run_dynaguide.py \
+		--video_path $(EVAL_DIR)/adaptive/rollout.mp4 \
+		--dataset_path $(EVAL_DIR)/adaptive/rollout.hdf5 \
+		--dataset_obs \
+		--json_path $(EVAL_DIR)/adaptive/results.json \
+		--horizon $(HORIZON) \
+		--n_rollouts $(N_ROLLOUTS) \
+		--agent $(AGENT) \
+		--output_folder $(EVAL_DIR)/adaptive \
+		--video_skip 2 \
+		--exp_setup_config $(EXP_CONFIG) \
+		--guidance $(GUIDANCE) \
+		--camera_names third_person \
+		--scale $(SCALE) --ss $(SS) --alpha $(ALPHA) \
+		--ensemble_paths $(ENSEMBLE_CKPTS) \
+		--adaptive_beta $(ADAPTIVE_BETA) \
+		--save_frames
+	@echo ""
+	@echo "Adaptive results:"
+	@cat $(EVAL_DIR)/adaptive/results.json
+
+eval-compare:
+	@echo "=== Running Baseline (fixed scale=$(SCALE)) ==="
+	$(MAKE) eval-baseline EVAL_DIR=$(EVAL_DIR)
+	@echo ""
+	@echo "=== Running Adaptive (beta=$(ADAPTIVE_BETA)) ==="
+	$(MAKE) eval-adaptive EVAL_DIR=$(EVAL_DIR)
+	@echo ""
+	@echo "============================================================"
+	@echo "COMPARISON"
+	@echo "============================================================"
+	@echo "Baseline:"
+	@cat $(EVAL_DIR)/baseline/results.json
+	@echo ""
+	@echo "Adaptive:"
+	@cat $(EVAL_DIR)/adaptive/results.json
+	@echo "============================================================"
 
 # ============================================================
 # Cleanup
